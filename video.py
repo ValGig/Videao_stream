@@ -2,7 +2,7 @@ import os
 import pygame
 from pytubefix import YouTube
 from pytube import Search
-from pydub import AudioSegment  # Importation pour la conversion audio 
+from pydub import AudioSegment  # Importation pour la conversion audio
 
 # Initialisation de pygame pour la lecture audio
 pygame.mixer.init()
@@ -33,7 +33,7 @@ def convert_audio(audio_file):
     audio = AudioSegment.from_file(audio_file)  # Charger le fichier audio
     mp3_file = audio_file.replace(".mp4", ".mp3")  # Renommer le fichier en .mp3
     audio.export(mp3_file, format="mp3")  # Exporter en MP3
-    return mp3_file
+    return mp3_file, audio.frame_rate  # Retourner le fichier MP3 et le taux d'échantillonnage
 
 # Fonction pour jouer l'audio avec pygame
 def play_audio(audio_file):
@@ -61,8 +61,11 @@ def main():
     print("Downloading audio file...")
     audio_file = download_audio(video)
     if audio_file:
-        # Convertir le fichier audio en MP3 si nécessaire
-        mp3_file = convert_audio(audio_file)
+        # Convertir le fichier audio en MP3 si nécessaire et récupérer le taux d'échantillonnage
+        mp3_file, sample_rate = convert_audio(audio_file)
+
+        # Afficher l'échantillonnage (taux d'échantillonnage)
+        print(f"Audio sample rate: {sample_rate} Hz")
 
         # Lire le fichier MP3 converti
         play_audio(mp3_file)
