@@ -1,0 +1,6 @@
+ffmpeg-python==0.2.0
+future==1.0.0
+pydub==0.25.1
+pygame==2.6.1
+pytube==15.0.0
+pytubefix==8.12.1
