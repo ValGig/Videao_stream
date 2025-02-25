@@ -8,6 +8,8 @@ import subprocess
 import threading
 import time
 
+
+
 # Dossier pour les playlists
 playlists_folder = 'Playlists'
 
@@ -18,6 +20,8 @@ current_audio_file = None
 audio_position = 0
 current_playlist = None
 current_index = 0
+track_menu = None
+track_dropdown = None
 
 # Fonction de recherche d'une vidéo YouTube
 def search_video(query):
@@ -69,29 +73,31 @@ def toggle_play_pause():
         play_audio_opus(current_audio_file, audio_position)
         is_playing = True
 
-# Fonction pour surveiller la fin de la lecture
-def monitor_playback():
-    global ffplay_process, is_playing, current_index, current_playlist
-
-    while True:
-        if ffplay_process and ffplay_process.poll() is not None:  # Si la lecture est terminée
-            is_playing = False
-            next_track()  # Passer à la piste suivante
-        time.sleep(1)  # Vérifier toutes les secondes
-
-# Fonction principale de la playlist
 # Fonction principale de la playlist
 def playlist():
-    global root, playpause_button, title_label, is_playing, current_playlist, current_index
-
+    global root, playpause_button, title_label, is_playing, current_playlist, current_index, track_menu, track_dropdown
+    
+     # Function to move the window
+    def move_window(event):
+        root.geometry(f'+{event.x_root}+{event.y_root}')
+        
     # Créer le dossier Playlists s'il n'existe pas
     if not os.path.exists(playlists_folder):
         os.makedirs(playlists_folder)
 
     # Créer la fenêtre principale
     root = tk.Tk()
-    root.title("Lecteur de Playlists")
-    root.config(bg='#404040')
+    # Remove the default title bar
+    root.overrideredirect(True)
+    #root.title("Lecteur de Playlists")
+    title_bar = tk.Frame(root, bg='black', relief='raised', bd=2)
+    title_bar.pack(fill=tk.X)
+        # Add a title label to the custom title bar
+    title_label = tk.Label(title_bar, text="Lecteur de Playlists", bg='black', fg='white')
+    title_label.pack(side=tk.LEFT, padx=10)
+    # Bind the title bar to the move window function
+    title_bar.bind('<B1-Motion>', move_window)
+    root.config(bg='#303030')
     
     # Récupérer la liste des playlists disponibles
     playlists = [f for f in os.listdir(playlists_folder) if f.endswith('.txt')]
@@ -103,8 +109,8 @@ def playlist():
     def create_gui():
         nonlocal playlists
 
-        # Cadre pour la sélection de playlist
-        top_frame = tk.Frame(root, bg='#404040')
+        # Cadre pour la sélection de playlist et de piste
+        top_frame = tk.Frame(root, bg='#303030')
         top_frame.pack(pady=10)
 
         # Menu déroulant pour les playlists
@@ -113,11 +119,18 @@ def playlist():
         playlist_menu.config(bg='#606060', fg='white')
         playlist_menu.pack(side='left', padx=10)
 
+        # Menu déroulant pour les pistes (initialement vide)
+        global track_menu, track_dropdown
+        track_menu = tk.StringVar(value="Sélectionnez une chanson")
+        track_dropdown = tk.OptionMenu(top_frame, track_menu, "")
+        track_dropdown.config(bg='#606060', fg='white')
+        track_dropdown.pack(side='left', padx=10)
+
         # Bouton de chargement
         load_button = tk.Button(top_frame, text="Charger", 
                               command=lambda: load_selected_playlist(selected_playlist.get()), 
                               bg='#101010', fg='white')
-        load_button.pack(side='left', padx=10)
+        load_button.pack(pady=10)
 
         # Label pour le titre
         global title_label
@@ -125,7 +138,7 @@ def playlist():
         title_label.pack(pady=10)
 
         # Boutons de contrôle
-        control_frame = tk.Frame(root, bg='#404040')
+        control_frame = tk.Frame(root, bg='#303030')
         control_frame.pack(pady=10)
 
         prev_button = tk.Button(control_frame, text="|<<", command=prev_track, bg='#aa2050', fg='white')
@@ -140,16 +153,30 @@ def playlist():
 
     # Fonction pour charger une playlist
     def load_selected_playlist(playlist_name):
-        global current_playlist, current_index
+        global current_playlist, current_index, track_menu, track_dropdown
         try:
             playlist_path = os.path.join(playlists_folder, playlist_name)
             current_playlist = pd.read_csv(playlist_path, header=None, names=['title'])
             current_index = 0
+
+            # Mettre à jour les options du menu déroulant des titres
+            track_menu.set("Sélectionnez une chanson")
+            track_dropdown['menu'].delete(0, 'end')
+            for song in current_playlist['title']:
+                track_dropdown['menu'].add_command(label=song, command=lambda value=song: play_song_by_title(value))
+
+            # Jouer la première chanson
             play_song(current_index)
         except Exception as e:
             messagebox.showerror("Erreur", f"Erreur de chargement:\n{str(e)}")
 
-    # Fonctions de contrôle de lecture
+    # Fonction pour jouer une chanson sélectionnée
+    def play_song_by_title(song_title):
+        global current_index
+        current_index = current_playlist[current_playlist['title'] == song_title].index[0]
+        play_song(current_index)
+
+    # Fonction pour jouer la chanson à l'index donné
     def play_song(index):
         global current_index
         if current_playlist is None or index < 0 or index >= len(current_playlist):
@@ -184,22 +211,9 @@ def playlist():
             current_index -= 1
             play_song(current_index)
 
-    # Fonction pour surveiller la fin de la lecture
-    def monitor_playback():
-        global ffplay_process, is_playing, current_index, current_playlist
-
-        while True:
-            if ffplay_process and ffplay_process.poll() is not None:  # Si la lecture est terminée
-                is_playing = False
-                next_track()  # Passer à la piste suivante
-            time.sleep(1)  # Vérifier toutes les secondes
-
     # Initialisation de l'interface
     create_gui()
     load_selected_playlist(playlists[0])  # Charge la première playlist par défaut
-
-    # Démarrer le thread de surveillance de la lecture
-    threading.Thread(target=monitor_playback, daemon=True).start()
 
     root.mainloop()
 
