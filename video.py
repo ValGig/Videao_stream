@@ -1,18 +1,19 @@
 import os
 import pandas as pd
-from pytubefix import YouTube
-from pytube import Search
+from pytubefix import YouTube, Search
 import tkinter as tk
 from tkinter import ttk, messagebox
 import subprocess
 import threading
 import time
+import signal
+import atexit
 
 # Dossier pour les playlists
 playlists_folder = 'Playlists'
 
 # Variables globales
-ffplay_process = None
+vlc_process = None
 is_playing = False
 current_audio_file = None
 audio_position = 0
@@ -24,13 +25,13 @@ search_results_list = []
 # Fonction de recherche d'une vidéo YouTube
 def search_video(query):
     print("Recherche de vidéos pour:", query)
-    search_results = Search(query).results
+    search_results = Search(query).videos
     return search_results
 
 # Fonction pour télécharger l'audio
 def download_audio(video):
     print("Téléchargement de l'audio...")
-    streams = video.streams.filter(only_audio=True, file_extension='webm')
+    streams = video.streams.filter(only_audio=True, file_extension='webm') 
     if streams:
         stream = streams.order_by('abr').desc().first()
         print(f"Codec : {stream.codecs} \nBitrate : {stream.abr} kbps\nFormat : {stream.mime_type}\nTaille : {stream.filesize/1000000} Mo\n")
@@ -40,57 +41,67 @@ def download_audio(video):
         print("Aucun flux audio disponible.")
         return None
 
-# Fonction pour jouer l'audio avec ffplay
-def play_audio_opus(audio_file, start_time=0, on_finish=None):
-    global ffplay_process, current_audio_file, playback_start_time, is_playing
+# Fonction pour jouer l'audio avec VLC
+def play_audio_vlc(audio_file, start_time=0, on_finish=None):
+    global vlc_process, current_audio_file, playback_start_time, is_playing
+
     current_audio_file = audio_file
-    
-    if ffplay_process:
-        ffplay_process.terminate()
-        ffplay_process.wait()
+
+    # Si un processus VLC est déjà en cours, on l'arrête
+    if vlc_process:
+        vlc_process.terminate()
+        vlc_process.wait()  # Attendre que le processus soit complètement terminé
 
     playback_start_time = time.time() - start_time
     try:
-        ffplay_process = subprocess.Popen(
-            ['ffplay', '-nodisp', '-autoexit', '-hide_banner', '-ss', str(start_time), audio_file],
+        vlc_process = subprocess.Popen(
+            ['vlc', '--intf', 'dummy', '--play-and-exit', '--start-time', str(start_time), audio_file],
             stderr=subprocess.PIPE, stdout=subprocess.PIPE
         )
     except Exception as e:
-        print(f"Impossible de lancer ffplay: {str(e)}")
+        print(f"Impossible de lancer VLC: {str(e)}")
         return
 
-    current_process = ffplay_process
+    current_process = vlc_process
 
     # Vérification rapide du démarrage
     time.sleep(0.2)
     if current_process.poll() is not None:
-        print("Échec du démarrage de ffplay. Fichier corrompu?")
+        print("Échec du démarrage de VLC. Fichier corrompu?")
         return
 
     def monitor_process(process):
+        global is_playing
         process.wait()
         exit_code = process.poll()
-        if ffplay_process == process and is_playing and exit_code == 0:
+        print(f"Processus VLC terminé avec le code de sortie : {exit_code}")
+
+        # Si la lecture s'est bien terminée, réinitialiser l'état et appeler le callback on_finish
+        if vlc_process == process and is_playing and exit_code == 0:
+            is_playing = False
             if on_finish:
-                on_finish()
+                print("Appel du callback on_finish...")
+                time.sleep(0.1)  # Petit délai pour éviter les conflits de thread
+                on_finish()  # Appeler le callback pour passer à la piste suivante
         elif exit_code != 0:
             print(f"Erreur de lecture (code {exit_code})")
 
+    # Démarrer un thread pour surveiller le processus
     threading.Thread(target=monitor_process, args=(current_process,), daemon=True).start()
 
 # Fonction pour basculer Play/Pause
 def toggle_play_pause():
-    global is_playing, ffplay_process, audio_position, playback_start_time
+    global is_playing, vlc_process, audio_position, playback_start_time
 
     if is_playing:
         print("Mise en pause...")
-        audio_position = time.time() - playback_start_time
-        if ffplay_process:
-            ffplay_process.terminate()
+        audio_position = time.time() - playback_start_time  # Sauvegarder la position actuelle
+        if vlc_process:
+            vlc_process.terminate()  # Arrêter VLC quand en pause
         is_playing = False
     else:
         print(f"Reprise à {audio_position:.2f} secondes...")
-        play_audio_opus(current_audio_file, audio_position)
+        play_audio_vlc(current_audio_file, audio_position)  # Reprendre à la position de la pause
         is_playing = True
 
 # Fonction pour la lecture d'une piste de playlist
@@ -112,19 +123,23 @@ def play_song(index):
         audio_file = download_audio(video)
         if audio_file:
             title_label.config(text=video.title)
-            is_playing = True
+            is_playing = True  # Forcer l'état "playing" pour la lecture
             threading.Thread(
-                target=lambda: play_audio_opus(audio_file, on_finish=next_track),
+                target=lambda: play_audio_vlc(audio_file, on_finish=next_track),  # Passer next_track ici pour l'enchaînement
                 daemon=True
             ).start()
     except Exception as e:
         messagebox.showerror("Erreur", f"Erreur de lecture:\n{str(e)}")
 
 def next_track():
-    global current_index
+    global current_index, is_playing
     if current_playlist is not None and current_index < len(current_playlist) - 1:
         current_index += 1
-        play_song(current_index)
+        is_playing = True  # Forcer l'état "playing" pour la nouvelle piste
+        play_song(current_index)  # Appeler play_song pour la piste suivante
+    else:
+        print("Fin de la playlist.")
+        is_playing = False  # Mettre is_playing à False à la fin de la playlist
 
 def prev_track():
     global current_index
@@ -187,11 +202,27 @@ def play_selected_search_result():
             current_audio_file = audio_file
             is_playing = True
             threading.Thread(
-                target=lambda: play_audio_opus(audio_file),
+                target=lambda: play_audio_vlc(audio_file),
                 daemon=True
             ).start()
     except Exception as e:
         messagebox.showerror("Erreur", f"Erreur de lecture:\n{str(e)}")
+
+def stop_vlc():
+    """Fonction pour arrêter VLC lorsque l'application se ferme."""
+    global vlc_process
+    if vlc_process:
+        vlc_process.terminate()
+        vlc_process.wait()  # Attendre que le processus VLC soit terminé
+    print("VLC arrêté.")
+
+def handle_exit():
+    """Fonction de gestion de la fermeture du programme."""
+    stop_vlc()
+    root.quit()
+
+# Enregistrer la fonction de gestion de la fermeture avec atexit
+atexit.register(stop_vlc)
 
 def main_gui():
     global root, playpause_button, title_label, track_dropdown, track_menu_var, search_results_listbox
@@ -200,21 +231,8 @@ def main_gui():
     root.title('Lecteur Audio')
     root.config(bg='#303030')
 
-    # Style pour les Combobox
-    style = ttk.Style()
-    style.theme_create('custom', parent='alt', settings={
-        'TCombobox': {
-            'configure': {
-                'fieldbackground': '#303030',
-                'background': '#303030',
-                'foreground': 'white',
-                'arrowcolor': 'white',
-                'selectbackground': '#303030',
-                'selectforeground': 'white'
-            }
-        }
-    })
-    style.theme_use('custom')
+    # Définir la fonction de fermeture
+    root.protocol("WM_DELETE_WINDOW", handle_exit)  # Arrêter VLC lors de la fermeture de la fenêtre
 
     # Cadre principal pour la partie haute
     top_frame = tk.Frame(root, bg='#303030')
@@ -274,6 +292,10 @@ def main_gui():
     # Associer la sélection d'une piste à la fonction play_selected_track
     track_menu_var.trace_add('write', play_selected_track)
 
+    # Bouton pour lancer la lecture de la piste sélectionnée dans la playlist
+    play_button = tk.Button(right_frame, text="Lire la piste", command=play_selected_track, bg='#ee6020', fg='black')
+    play_button.grid(row=4, column=0, pady=5, sticky='ew')
+
     # Contrôles (partie basse)
     bottom_frame = tk.Frame(root, bg='#303030')
     bottom_frame.pack(fill='x', pady=10)
@@ -301,6 +323,7 @@ def main_gui():
         load_selected_playlist(playlists[0])
 
     root.mainloop()
+
 
 if __name__ == "__main__":
     if not os.path.exists(playlists_folder):
