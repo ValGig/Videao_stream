@@ -3,12 +3,10 @@ import pandas as pd
 from pytubefix import YouTube
 from pytube import Search
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import ttk, messagebox
 import subprocess
 import threading
 import time
-
-
 
 # Dossier pour les playlists
 playlists_folder = 'Playlists'
@@ -20,15 +18,13 @@ current_audio_file = None
 audio_position = 0
 current_playlist = None
 current_index = 0
-track_menu = None
-track_dropdown = None
+playback_start_time = 0
+search_results_list = []
 
 # Fonction de recherche d'une vidéo YouTube
 def search_video(query):
     print("Recherche de vidéos pour:", query)
     search_results = Search(query).results
-    for i, video in enumerate(search_results):
-        print(f"{i + 1}. {video.title}")
     return search_results
 
 # Fonction pour télécharger l'audio
@@ -45,17 +41,42 @@ def download_audio(video):
         return None
 
 # Fonction pour jouer l'audio avec ffplay
-def play_audio_opus(audio_file, start_time=0):
-    global ffplay_process, current_audio_file, playback_start_time
+def play_audio_opus(audio_file, start_time=0, on_finish=None):
+    global ffplay_process, current_audio_file, playback_start_time, is_playing
     current_audio_file = audio_file
     
     if ffplay_process:
         ffplay_process.terminate()
         ffplay_process.wait()
 
-    # Enregistrer le temps de démarrage (ajusté pour le début)
     playback_start_time = time.time() - start_time
-    ffplay_process = subprocess.Popen(['ffplay', '-nodisp', '-autoexit', '-hide_banner', '-ss', str(start_time), audio_file])
+    try:
+        ffplay_process = subprocess.Popen(
+            ['ffplay', '-nodisp', '-autoexit', '-hide_banner', '-ss', str(start_time), audio_file],
+            stderr=subprocess.PIPE, stdout=subprocess.PIPE
+        )
+    except Exception as e:
+        print(f"Impossible de lancer ffplay: {str(e)}")
+        return
+
+    current_process = ffplay_process
+
+    # Vérification rapide du démarrage
+    time.sleep(0.2)
+    if current_process.poll() is not None:
+        print("Échec du démarrage de ffplay. Fichier corrompu?")
+        return
+
+    def monitor_process(process):
+        process.wait()
+        exit_code = process.poll()
+        if ffplay_process == process and is_playing and exit_code == 0:
+            if on_finish:
+                on_finish()
+        elif exit_code != 0:
+            print(f"Erreur de lecture (code {exit_code})")
+
+    threading.Thread(target=monitor_process, args=(current_process,), daemon=True).start()
 
 # Fonction pour basculer Play/Pause
 def toggle_play_pause():
@@ -63,196 +84,225 @@ def toggle_play_pause():
 
     if is_playing:
         print("Mise en pause...")
-        # Calculer le temps écoulé depuis le début de la lecture
         audio_position = time.time() - playback_start_time
-        ffplay_process.terminate()
-        ffplay_process = None
+        if ffplay_process:
+            ffplay_process.terminate()
         is_playing = False
     else:
         print(f"Reprise à {audio_position:.2f} secondes...")
         play_audio_opus(current_audio_file, audio_position)
         is_playing = True
 
-# Fonction principale de la playlist
-def playlist():
-    global root, playpause_button, title_label, is_playing, current_playlist, current_index, track_menu, track_dropdown
-    
-     # Function to move the window
-    def move_window(event):
-        root.geometry(f'+{event.x_root}+{event.y_root}')
-        
-    # Créer le dossier Playlists s'il n'existe pas
-    if not os.path.exists(playlists_folder):
-        os.makedirs(playlists_folder)
-
-    # Créer la fenêtre principale
-    root = tk.Tk()
-    # Remove the default title bar
-    root.overrideredirect(True)
-    #root.title("Lecteur de Playlists")
-    title_bar = tk.Frame(root, bg='black', relief='raised', bd=2)
-    title_bar.pack(fill=tk.X)
-        # Add a title label to the custom title bar
-    title_label = tk.Label(title_bar, text="Lecteur de Playlists", bg='black', fg='white')
-    title_label.pack(side=tk.LEFT, padx=10)
-    # Bind the title bar to the move window function
-    title_bar.bind('<B1-Motion>', move_window)
-    root.config(bg='#303030')
-    
-    # Récupérer la liste des playlists disponibles
-    playlists = [f for f in os.listdir(playlists_folder) if f.endswith('.txt')]
-    if not playlists:
-        messagebox.showerror("Erreur", "Aucune playlist trouvée dans le dossier 'Playlists'!")
+# Fonction pour la lecture d'une piste de playlist
+def play_song(index):
+    global current_index, is_playing
+    if current_playlist is None or index < 0 or index >= len(current_playlist):
         return
 
-    # Widgets GUI
-    def create_gui():
-        nonlocal playlists
+    current_index = index
+    song_title = current_playlist.iloc[index]['title']
+    search_results = search_video(song_title)
+    
+    if not search_results:
+        messagebox.showerror("Erreur", "Aucun résultat trouvé!")
+        return
 
-        # Cadre pour la sélection de playlist et de piste
-        top_frame = tk.Frame(root, bg='#303030')
-        top_frame.pack(pady=10)
+    try:
+        video = YouTube(search_results[0].watch_url)
+        audio_file = download_audio(video)
+        if audio_file:
+            title_label.config(text=video.title)
+            is_playing = True
+            threading.Thread(
+                target=lambda: play_audio_opus(audio_file, on_finish=next_track),
+                daemon=True
+            ).start()
+    except Exception as e:
+        messagebox.showerror("Erreur", f"Erreur de lecture:\n{str(e)}")
 
-        # Menu déroulant pour les playlists
-        selected_playlist = tk.StringVar(value=playlists[0])
-        playlist_menu = tk.OptionMenu(top_frame, selected_playlist, *playlists)
-        playlist_menu.config(bg='#606060', fg='white')
-        playlist_menu.pack(side='left', padx=10)
-
-        # Menu déroulant pour les pistes (initialement vide)
-        global track_menu, track_dropdown
-        track_menu = tk.StringVar(value="Sélectionnez une chanson")
-        track_dropdown = tk.OptionMenu(top_frame, track_menu, "")
-        track_dropdown.config(bg='#606060', fg='white')
-        track_dropdown.pack(side='left', padx=10)
-
-        # Bouton de chargement
-        load_button = tk.Button(top_frame, text="Charger", 
-                              command=lambda: load_selected_playlist(selected_playlist.get()), 
-                              bg='#101010', fg='white')
-        load_button.pack(pady=10)
-
-        # Label pour le titre
-        global title_label
-        title_label = tk.Label(root, text="", font=("Helvetica", 12), bg='#404040', fg='white')
-        title_label.pack(pady=10)
-
-        # Boutons de contrôle
-        control_frame = tk.Frame(root, bg='#303030')
-        control_frame.pack(pady=10)
-
-        prev_button = tk.Button(control_frame, text="|<<", command=prev_track, bg='#aa2050', fg='white')
-        prev_button.pack(side='left', padx=5)
-
-        global playpause_button
-        playpause_button = tk.Button(control_frame, text="Play/Pause", command=toggle_play_pause, bg='#802080', fg='white')
-        playpause_button.pack(side='left', padx=5)
-
-        next_button = tk.Button(control_frame, text=">>|", command=next_track, bg='#5020aa', fg='white')
-        next_button.pack(side='left', padx=5)
-
-    # Fonction pour charger une playlist
-    def load_selected_playlist(playlist_name):
-        global current_playlist, current_index, track_menu, track_dropdown
-        try:
-            playlist_path = os.path.join(playlists_folder, playlist_name)
-            current_playlist = pd.read_csv(playlist_path, header=None, names=['title'])
-            current_index = 0
-
-            # Mettre à jour les options du menu déroulant des titres
-            track_menu.set("Sélectionnez une chanson")
-            track_dropdown['menu'].delete(0, 'end')
-            for song in current_playlist['title']:
-                track_dropdown['menu'].add_command(label=song, command=lambda value=song: play_song_by_title(value))
-
-            # Jouer la première chanson
-            play_song(current_index)
-        except Exception as e:
-            messagebox.showerror("Erreur", f"Erreur de chargement:\n{str(e)}")
-
-    # Fonction pour jouer une chanson sélectionnée
-    def play_song_by_title(song_title):
-        global current_index
-        current_index = current_playlist[current_playlist['title'] == song_title].index[0]
+def next_track():
+    global current_index
+    if current_playlist is not None and current_index < len(current_playlist) - 1:
+        current_index += 1
         play_song(current_index)
 
-    # Fonction pour jouer la chanson à l'index donné
-    def play_song(index):
-        global current_index
-        if current_playlist is None or index < 0 or index >= len(current_playlist):
-            return
+def prev_track():
+    global current_index
+    if current_playlist is not None and current_index > 0:
+        current_index -= 1
+        play_song(current_index)
 
-        current_index = index
-        song_title = current_playlist.iloc[index]['title']
-        search_results = search_video(song_title)
-        
-        if not search_results:
-            messagebox.showerror("Erreur", "Aucun résultat trouvé!")
-            return
+def play_selected_track(*args):
+    """Lance la lecture de la piste sélectionnée dans le menu déroulant."""
+    global current_playlist, track_menu_var
+    selected_track = track_menu_var.get()
+    if selected_track and current_playlist is not None:
+        index = current_playlist[current_playlist['title'] == selected_track].index[0]
+        play_song(index)
 
-        try:
-            video = YouTube(search_results[0].watch_url)
-            audio_file = download_audio(video)
-            if audio_file:
-                title_label.config(text=video.title)
-                threading.Thread(target=lambda: play_audio_opus(audio_file), daemon=True).start()
-        except Exception as e:
-            messagebox.showerror("Erreur", f"Erreur de lecture:\n{str(e)}")
+def load_selected_playlist(playlist_name):
+    """Charge une playlist et met à jour le menu déroulant des pistes."""
+    global current_playlist, current_index, track_menu_var
+    try:
+        playlist_path = os.path.join(playlists_folder, playlist_name)
+        current_playlist = pd.read_csv(playlist_path, header=None, names=['title'])
+        current_index = 0
 
-    def next_track():
-        global current_index
-        if current_playlist is not None and current_index < len(current_playlist) - 1:
-            current_index += 1
-            play_song(current_index)
+        # Mettre à jour le menu des titres
+        track_menu_var.set(current_playlist.iloc[0]['title'])
+        track_dropdown['values'] = current_playlist['title'].tolist()
 
-    def prev_track():
-        global current_index
-        if current_playlist is not None and current_index > 0:
-            current_index -= 1
-            play_song(current_index)
+        # Lancer la lecture de la première piste
+        play_song(current_index)
+    except Exception as e:
+        messagebox.showerror("Erreur", f"Erreur de chargement:\n{str(e)}")
 
-    # Initialisation de l'interface
-    create_gui()
-    load_selected_playlist(playlists[0])  # Charge la première playlist par défaut
+def perform_search(query):
+    global search_results_list, search_results_listbox
+    if not query:
+        return
+    
+    search_results = search_video(query)
+    search_results_list = search_results
+    search_results_listbox.delete(0, tk.END)
+    for result in search_results:
+        search_results_listbox.insert(tk.END, result.title)
+
+def play_selected_search_result():
+    global search_results_list
+    selected_indices = search_results_listbox.curselection()
+    if not selected_indices:
+        messagebox.showerror("Erreur", "Aucune vidéo sélectionnée!")
+        return
+    
+    index = selected_indices[0]
+    chosen_video = search_results_list[index]
+    
+    try:
+        video = YouTube(chosen_video.watch_url)
+        audio_file = download_audio(video)
+        if audio_file:
+            title_label.config(text=video.title)
+            global is_playing, current_audio_file
+            current_audio_file = audio_file
+            is_playing = True
+            threading.Thread(
+                target=lambda: play_audio_opus(audio_file),
+                daemon=True
+            ).start()
+    except Exception as e:
+        messagebox.showerror("Erreur", f"Erreur de lecture:\n{str(e)}")
+
+def main_gui():
+    global root, playpause_button, title_label, track_dropdown, track_menu_var, search_results_listbox
+
+    root = tk.Tk()
+    root.title('Lecteur Audio')
+    root.config(bg='#303030')
+
+    # Style pour les Combobox
+    style = ttk.Style()
+    style.theme_create('custom', parent='alt', settings={
+        'TCombobox': {
+            'configure': {
+                'fieldbackground': '#303030',
+                'background': '#303030',
+                'foreground': 'white',
+                'arrowcolor': 'white',
+                'selectbackground': '#303030',
+                'selectforeground': 'white'
+            }
+        }
+    })
+    style.theme_use('custom')
+
+    # Cadre principal pour la partie haute
+    top_frame = tk.Frame(root, bg='#303030')
+    top_frame.pack(fill='both', expand=True)
+
+    # Section One-shot (gauche)
+    left_frame = tk.Frame(top_frame, bg='#303030')
+    left_frame.pack(side='left', fill='both', expand=True, padx=10, pady=10)
+
+    # Titre "Rechercher une piste" (centré et en gras)
+    search_label = tk.Label(left_frame, text="Rechercher une piste", bg='#303030', fg='white', font=('Helvetica', 12, 'bold'))
+    search_label.grid(row=0, column=0, pady=10, sticky='ew')
+
+    # Champ de recherche
+    search_entry = tk.Entry(left_frame, width=50, bg='#303030', fg='white')
+    search_entry.grid(row=1, column=0, pady=5, sticky='ew')
+
+    # Bouton de recherche
+    search_button = tk.Button(left_frame, text="Rechercher", command=lambda: perform_search(search_entry.get()), bg='#ee6020', fg='black')
+    search_button.grid(row=2, column=0, pady=5, sticky='ew')
+
+    # Liste des résultats de recherche
+    search_results_listbox = tk.Listbox(left_frame, width=50, height=5, bg='#303030', fg='white')
+    search_results_listbox.grid(row=3, column=0, pady=5, sticky='ew')
+
+    # Bouton pour lire la piste sélectionnée
+    play_selected_button = tk.Button(left_frame, text="Lire la piste sélectionnée", command=play_selected_search_result, bg='#ee6020', fg='black')
+    play_selected_button.grid(row=4, column=0, pady=5, sticky='ew')
+
+    # Espace entre les parties gauche et droite
+    separator = tk.Frame(top_frame, bg='white', width=1.5)
+    separator.pack(side='left', fill='y', padx=10)
+
+    # Section Playlist (droite)
+    right_frame = tk.Frame(top_frame, bg='#303030')
+    right_frame.pack(side='right', fill='both', expand=True, padx=10, pady=10)
+
+    # Titre "Gestion des playlists" (centré et en gras)
+    playlist_label = tk.Label(right_frame, text="Gestion des playlists", bg='#303030', fg='white', font=('Helvetica', 12, 'bold'))
+    playlist_label.grid(row=0, column=0, pady=10, sticky='ew')
+
+    # Menu déroulant pour sélectionner une playlist
+    playlists = [f for f in os.listdir(playlists_folder) if f.endswith('.txt')]
+    selected_playlist = tk.StringVar(value=playlists[0] if playlists else "")
+    playlist_menu = ttk.Combobox(right_frame, textvariable=selected_playlist, values=playlists, state='readonly', width=47)
+    playlist_menu.grid(row=1, column=0, pady=5, sticky='ew')
+
+    # Bouton pour charger la playlist
+    load_button = tk.Button(right_frame, text="Charger la playlist", command=lambda: load_selected_playlist(selected_playlist.get()), bg='#ee6020', fg='black')
+    load_button.grid(row=2, column=0, pady=5, sticky='ew')
+
+    # Menu déroulant pour sélectionner une piste dans la playlist
+    track_menu_var = tk.StringVar()
+    track_dropdown = ttk.Combobox(right_frame, textvariable=track_menu_var, state='readonly', width=47)
+    track_dropdown.grid(row=3, column=0, pady=5, sticky='ew')
+
+    # Associer la sélection d'une piste à la fonction play_selected_track
+    track_menu_var.trace_add('write', play_selected_track)
+
+    # Contrôles (partie basse)
+    bottom_frame = tk.Frame(root, bg='#303030')
+    bottom_frame.pack(fill='x', pady=10)
+
+    # Centrer les boutons de navigation et le titre
+    control_frame = tk.Frame(bottom_frame, bg='#303030')
+    control_frame.pack(side='top')
+
+    prev_button = tk.Button(control_frame, text="Précédent", command=prev_track, bg='#cc5080', fg='white')
+    prev_button.pack(side='left', padx=5)
+
+    global playpause_button
+    playpause_button = tk.Button(control_frame, text="Play/Pause", command=toggle_play_pause, bg='#aa50aa', fg='white')
+    playpause_button.pack(side='left', padx=5)
+
+    next_button = tk.Button(control_frame, text="Suivant", command=next_track, bg='#8050cc', fg='white')
+    next_button.pack(side='left', padx=5)
+
+    # Titre de la piste jouée
+    title_label = tk.Label(bottom_frame, text="", font=("Helvetica", 12), bg='#303030', fg='white')
+    title_label.pack(side='top', pady=10)
+
+    # Charger la première playlist si disponible
+    if playlists:
+        load_selected_playlist(playlists[0])
 
     root.mainloop()
 
-
-# Fonction principale du programme pour la recherche et écoute d'une musique unique
-def one_shot():
-    global root, playpause_button, title_label, is_playing
-    is_playing = False
-
-    query = input("Recherche YouTube (ex: 'Lo-fi music'): ")
-    search_results = search_video(query)
-    video_choice = int(input("Numéro de la vidéo: ")) - 1
-    chosen_video = search_results[video_choice]
-
-    video = YouTube(chosen_video.watch_url)
-    audio_file = download_audio(video)
-
-    if audio_file:
-        global current_audio_file
-        current_audio_file = audio_file
-        
-        root = tk.Tk()
-        root.title("Lecteur Audio")
-        root.config(bg='#121212')
-        
-        title_label = tk.Label(root, text=f"{chosen_video.title}", font=("Helvetica", 14), bg='#121212', fg="white")
-        title_label.pack(pady=10)
-
-        playpause_button = tk.Button(root, text="Play/Pause", command=toggle_play_pause, font=("Helvetica", 12), bg="#4CAF50", fg="white")
-        playpause_button.pack(pady=10)
-
-        threading.Thread(target=lambda: play_audio_opus(audio_file), daemon=True).start()
-        root.mainloop()
-
-# Point d'entrée du programme
 if __name__ == "__main__":
-    # Choisir entre une recherche unique ou une playlist
-    choice = input("Choose option:\n1. One-shot music search\n2. Playlist\n Enter choice (1/2): ")
-    if choice == '1':
-        one_shot()
-    elif choice == '2':
-        playlist()
+    if not os.path.exists(playlists_folder):
+        os.makedirs(playlists_folder)
+    main_gui()
