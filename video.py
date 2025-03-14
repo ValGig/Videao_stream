@@ -202,7 +202,7 @@ def load_selected_playlist(playlist_name):
         track_dropdown['values'] = current_playlist['title'].tolist()
 
         # Lancer la lecture de la première piste
-        play_song(current_index)
+        #play_song(current_index)
     except Exception as e:
         messagebox.showerror("Erreur", f"Erreur de chargement:\n{str(e)}")
 
